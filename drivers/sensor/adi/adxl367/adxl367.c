@@ -626,22 +626,28 @@ static int adxl367_reset(const struct device *dev)
 	return ret;
 }
 
-
 /**
- * @brief Reads the 3-axis raw data from the accelerometer.
+ * @brief Reads the 3-axis raw data and the raw temperature (if enabled via
+ * adxl367_temp_read_en or DTS property temp-en) from the accelerometer.
  *
  * @param dev - The device structure.
  * @param accel_data - store the XYZ axis accelerometer data.
+ * @param raw_temp - Raw value of temperature. Can be NULL if temp sensor
+ * 						is disabled.
  *
  * @return 0 in case of success, negative error code otherwise.
  */
-int adxl367_get_accel_data(const struct device *dev,
-			   struct adxl367_xyz_accel_data *accel_data)
+int adxl367_get_accel_temp_data(const struct device *dev, struct adxl367_xyz_accel_data *accel_data,
+				int16_t *raw_temp)
 {
 	int ret;
-	uint8_t xyz_values[6] = { 0 };
+	uint8_t xyzt_values[8] = {0};
 	uint8_t reg_data, nready = 1U;
+	const struct adxl367_dev_config *cfg = dev->config;
 	struct adxl367_data *data = dev->data;
+
+	/* Check how many bytes to read */
+	const uint8_t sampleSize = cfg->temp_en ? 8 : 6;
 
 	while (nready != 0) {
 		ret = data->hw_tf->read_reg(dev, ADXL367_STATUS, &reg_data);
@@ -654,68 +660,41 @@ int adxl367_get_accel_data(const struct device *dev,
 		}
 	}
 
-	ret = data->hw_tf->read_reg_multiple(dev, ADXL367_X_DATA_H, xyz_values, 6);
+	/* Temporary raw values (not sign-extended) */
+	uint16_t x, y, z, t = 0;
+
+	ret = data->hw_tf->read_reg_multiple(dev, ADXL367_X_DATA_H, xyzt_values, sampleSize);
 	if (ret != 0) {
 		return ret;
 	}
 
-	/* result is 14 bits long, ignore last 2 bits from low byte */
-	accel_data->x = ((int16_t)xyz_values[0] << 6) + (xyz_values[1] >> 2);
-	accel_data->y = ((int16_t)xyz_values[2] << 6) + (xyz_values[3] >> 2);
-	accel_data->z = ((int16_t)xyz_values[4] << 6) + (xyz_values[5] >> 2);
+	/* The directly read data is 14 bits signed, left-adjusted. Combine the two bytes
+	 * to build a 14bit unsigned right-adjusted integer.
+	 */
 
-	/* extend sign to 16 bits */
-	if ((accel_data->x & BIT(13)) != 0) {
-		accel_data->x |= GENMASK(15, 14);
+	x = ((((uint16_t)xyzt_values[0]) << 6) | (xyzt_values[1] >> 2));
+	y = ((((uint16_t)xyzt_values[2]) << 6) | (xyzt_values[3] >> 2));
+	z = ((((uint16_t)xyzt_values[4]) << 6) | (xyzt_values[5] >> 2));
+	if (cfg->temp_en) {
+		t = ((((uint16_t)xyzt_values[6]) << 6) | (xyzt_values[7] >> 2));
 	}
 
-	if ((accel_data->y & BIT(13)) != 0) {
-		accel_data->y |= GENMASK(15, 14);
-	}
+	/* Sign-extend the 14bit values to 16bit signed int by using a bitfield:
+	 *
+	 * https://graphics.stanford.edu/~seander/bithacks.html#FixedSignExtend
+	 *
+	 * This allows compilers to optimize this operation efficiently, e.g. using SBFX instruction
+	 * on ARM without branching.
+	 */
 
-	if ((accel_data->z & BIT(13)) != 0) {
-		accel_data->z |= GENMASK(15, 14);
-	}
-
-	return 0;
-}
-
-/**
- * @brief Reads the raw temperature of the device. If ADXL367_TEMP_EN is not
- *        set, use adxl367_temp_read_en() first to enable temperature reading.
- *
- * @param dev      - The device structure.
- * @param raw_temp - Raw value of temperature.
- *
- * @return 0 in case of success, negative error code otherwise.
- */
-int adxl367_get_temp_data(const struct device *dev, int16_t *raw_temp)
-{
-	int ret;
-	uint8_t temp[2] = { 0 };
-	uint8_t reg_data, nready = 1U;
-	struct adxl367_data *data = dev->data;
-
-	while (nready != 0) {
-		ret = data->hw_tf->read_reg(dev, ADXL367_STATUS, &reg_data);
-		if (ret != 0) {
-			return ret;
-		}
-
-		if ((reg_data & ADXL367_STATUS_DATA_RDY) != 0) {
-			nready = 0U;
-		}
-	}
-
-	ret = data->hw_tf->read_reg_multiple(dev, ADXL367_TEMP_H, temp, 2);
-	if (ret != 0) {
-		return ret;
-	}
-
-	*raw_temp = ((int16_t)temp[0] << 6) + (temp[1] >> 2);
-	/* extend sign to 16 bits */
-	if ((*raw_temp & BIT(13)) != 0) {
-		*raw_temp |= GENMASK(15, 14);
+	struct Converter {
+		signed int x: 14;
+	};
+	accel_data->x = ((struct Converter){.x = x}).x;
+	accel_data->y = ((struct Converter){.x = y}).x;
+	accel_data->z = ((struct Converter){.x = z}).x;
+	if (cfg->temp_en) {
+		*raw_temp = ((struct Converter){.x = t}).x;
 	}
 
 	return 0;
@@ -811,14 +790,8 @@ static int adxl367_sample_fetch(const struct device *dev,
 				enum sensor_channel chan)
 {
 	struct adxl367_data *data = dev->data;
-	int ret;
 
-	ret = adxl367_get_accel_data(dev, &data->sample);
-	if (ret != 0) {
-		return ret;
-	}
-
-	return adxl367_get_temp_data(dev, &data->temp_val);
+	return adxl367_get_accel_temp_data(dev, &data->sample, &data->temp_val);
 }
 
 static void adxl367_accel_convert(const struct device *dev,
@@ -1028,29 +1001,21 @@ static int adxl367_init(const struct device *dev)
 #define ADXL367_CFG_IRQ(inst)
 #endif /* CONFIG_ADXL367_TRIGGER */
 
-#define ADXL367_CONFIG(inst)								\
-		.odr = DT_INST_PROP(inst, odr),						\
-		.autosleep = false,							\
-		.low_noise = false,							\
-		.temp_en = true,							\
-		.range = ADXL367_2G_RANGE,						\
-		.activity_th.value = CONFIG_ADXL367_ACTIVITY_THRESHOLD,			\
-		.activity_th.referenced =						\
-			IS_ENABLED(CONFIG_ADXL367_REFERENCED_ACTIVITY_DETECTION_MODE),	\
-		.activity_th.enable =							\
-			IS_ENABLED(CONFIG_ADXL367_ACTIVITY_DETECTION_MODE),		\
-		.activity_time = CONFIG_ADXL367_ACTIVITY_TIME,				\
-		.inactivity_th.value = CONFIG_ADXL367_INACTIVITY_THRESHOLD,		\
-		.inactivity_th.referenced =						\
-			IS_ENABLED(CONFIG_ADXL367_REFERENCED_INACTIVITY_DETECTION_MODE),\
-		.inactivity_th.enable =							\
-			IS_ENABLED(CONFIG_ADXL367_INACTIVITY_DETECTION_MODE),		\
-		.inactivity_time = CONFIG_ADXL367_INACTIVITY_TIME,			\
-		.fifo_config.fifo_mode = ADXL367_FIFO_DISABLED,				\
-		.fifo_config.fifo_format = ADXL367_FIFO_FORMAT_XYZ,			\
-		.fifo_config.fifo_samples = 128,					\
-		.fifo_config.fifo_read_mode = ADXL367_14B_CHID,				\
-		.op_mode = ADXL367_MEASURE,
+#define ADXL367_CONFIG(inst)                                                                       \
+	.odr = DT_INST_PROP(inst, odr), .autosleep = false, .low_noise = false,                    \
+	.temp_en = DT_INST_PROP(inst, temp_en), .range = ADXL367_2G_RANGE,                         \
+	.activity_th.value = CONFIG_ADXL367_ACTIVITY_THRESHOLD,                                    \
+	.activity_th.referenced = IS_ENABLED(CONFIG_ADXL367_REFERENCED_ACTIVITY_DETECTION_MODE),   \
+	.activity_th.enable = IS_ENABLED(CONFIG_ADXL367_ACTIVITY_DETECTION_MODE),                  \
+	.activity_time = CONFIG_ADXL367_ACTIVITY_TIME,                                             \
+	.inactivity_th.value = CONFIG_ADXL367_INACTIVITY_THRESHOLD,                                \
+	.inactivity_th.referenced =                                                                \
+		IS_ENABLED(CONFIG_ADXL367_REFERENCED_INACTIVITY_DETECTION_MODE),                   \
+	.inactivity_th.enable = IS_ENABLED(CONFIG_ADXL367_INACTIVITY_DETECTION_MODE),              \
+	.inactivity_time = CONFIG_ADXL367_INACTIVITY_TIME,                                         \
+	.fifo_config.fifo_mode = ADXL367_FIFO_DISABLED,                                            \
+	.fifo_config.fifo_format = ADXL367_FIFO_FORMAT_XYZ, .fifo_config.fifo_samples = 128,       \
+	.fifo_config.fifo_read_mode = ADXL367_14B_CHID, .op_mode = ADXL367_MEASURE,
 
 /*
  * Instantiation macros used when a device is on a SPI bus.
