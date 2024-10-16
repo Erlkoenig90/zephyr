@@ -102,6 +102,7 @@
 #define ADXL367_TO_REG(x)				((x) >> 1)
 #define ADXL367_SPI_WRITE_REG				0x0Au
 #define ADXL367_SPI_READ_REG				0x0Bu
+#define ADXL367_SPI_READ_FIFO                           0x0Du
 
 #define ADXL367_ABSOLUTE				0x00
 #define ADXL367_REFERENCED				0x01
@@ -284,6 +285,7 @@ struct adxl367_xyz_accel_data {
 struct adxl367_transfer_function {
 	int (*read_reg_multiple)(const struct device *dev, uint8_t reg_addr,
 				 uint8_t *value, uint16_t len);
+	int (*read_fifo)(const struct device *dev, uint8_t *data, uint16_t len);
 	int (*write_reg)(const struct device *dev, uint8_t reg_addr,
 			 uint8_t value);
 	int (*read_reg)(const struct device *dev, uint8_t reg_addr,

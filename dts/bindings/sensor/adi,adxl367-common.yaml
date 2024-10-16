@@ -29,6 +29,23 @@ properties:
       The INT1 signal defaults to active high as produced by the
       sensor.  The property value should ensure the flags properly
       describe the signal that is presented to the driver.
+  
+  fifo-mode:
+    type: int
+    default: 2
+    description: |
+      Configures the FIFO mode of the sensor. Possible values are:
+        0 # FIFO disabled, only one dataset is ever stored
+        1 # FIFO enabled, save oldest
+        2 # FIFO enabled, stream mode
+        3 # FIFO enabled, triggered mode
+      The default is 2, as FIFO mode is generally easier to use.
+  fifo-samples:
+    type: int
+    default: 0x80
+    description: |
+      Number of samples to store in the FIFO. Range 0-511. The
+      default is 0x80h which matches the default on the device.
   temp-en:
     type: boolean
     description:

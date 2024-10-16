@@ -80,6 +80,19 @@ static int adxl367_spi_reg_read_multiple(const struct device *dev,
 				  reg_data, count);
 }
 
+static int adxl367_spi_read_fifo(const struct device *dev, uint8_t *data, uint16_t len)
+{
+	const struct adxl367_dev_config *config = dev->config;
+
+	uint8_t cmd[1] = {ADXL367_SPI_READ_FIFO};
+	const struct spi_buf buf[3] = {{.buf = &cmd, .len = 1}, {.buf = data, .len = len}};
+	const struct spi_buf_set tx = {.buffers = buf, .count = 1};
+
+	const struct spi_buf_set rx = {.buffers = buf, .count = 2};
+
+	return spi_transceive_dt(&config->spi, &tx, &rx);
+}
+
 static int adxl367_spi_reg_write(const struct device *dev,
 				 uint8_t reg_addr,
 				 uint8_t reg_data)
@@ -110,6 +123,7 @@ int adxl367_spi_reg_write_mask(const struct device *dev,
 static const struct adxl367_transfer_function adxl367_spi_transfer_fn = {
 	.read_reg_multiple = adxl367_spi_reg_read_multiple,
 	.write_reg = adxl367_spi_reg_write,
+	.read_fifo = adxl367_spi_read_fifo,
 	.read_reg = adxl367_spi_reg_read,
 	.write_reg_mask = adxl367_spi_reg_write_mask,
 };

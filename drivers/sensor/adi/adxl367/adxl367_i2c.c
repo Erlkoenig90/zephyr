@@ -53,6 +53,15 @@ static int adxl367_i2c_reg_read_multiple(const struct device *dev,
 				  reg_data, count);
 }
 
+static int adxl367_i2c_read_fifo(const struct device *dev, uint8_t *data, uint16_t len)
+{
+	const struct adxl367_dev_config *config = dev->config;
+
+	return i2c_burst_read_dt(&config->i2c,
+				 /* I2C FIFO data pseudo-register */
+				 0x18, (uint8_t *)data, len);
+}
+
 static int adxl367_i2c_reg_write(const struct device *dev,
 				 uint8_t reg_addr,
 				 uint8_t reg_data)
@@ -84,7 +93,8 @@ int adxl367_i2c_reg_write_mask(const struct device *dev,
 static const struct adxl367_transfer_function adxl367_i2c_transfer_fn = {
 	.read_reg_multiple = adxl367_i2c_reg_read_multiple,
 	.write_reg = adxl367_i2c_reg_write,
-	.read_reg  = adxl367_i2c_reg_read,
+	.read_fifo = adxl367_i2c_read_fifo,
+	.read_reg = adxl367_i2c_reg_read,
 	.write_reg_mask = adxl367_i2c_reg_write_mask,
 };
 

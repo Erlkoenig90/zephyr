@@ -646,6 +646,10 @@ int adxl367_get_accel_temp_data(const struct device *dev, struct adxl367_xyz_acc
 	const struct adxl367_dev_config *cfg = dev->config;
 	struct adxl367_data *data = dev->data;
 
+	/* Check the correct status register bit depending on whether FIFO mode is used or not */
+	const uint8_t mask = cfg->fifo_config.fifo_mode == ADXL367_FIFO_DISABLED
+				     ? ADXL367_STATUS_DATA_RDY
+				     : ADXL367_STATUS_FIFO_RDY;
 	/* Check how many bytes to read */
 	const uint8_t sampleSize = cfg->temp_en ? 8 : 6;
 
@@ -655,7 +659,7 @@ int adxl367_get_accel_temp_data(const struct device *dev, struct adxl367_xyz_acc
 			return ret;
 		}
 
-		if ((reg_data & ADXL367_STATUS_DATA_RDY) != 0) {
+		if ((reg_data & mask) != 0) {
 			nready = 0U;
 		}
 	}
@@ -663,20 +667,40 @@ int adxl367_get_accel_temp_data(const struct device *dev, struct adxl367_xyz_acc
 	/* Temporary raw values (not sign-extended) */
 	uint16_t x, y, z, t = 0;
 
-	ret = data->hw_tf->read_reg_multiple(dev, ADXL367_X_DATA_H, xyzt_values, sampleSize);
-	if (ret != 0) {
-		return ret;
-	}
+	if (cfg->fifo_config.fifo_mode == ADXL367_FIFO_DISABLED) {
+		ret = data->hw_tf->read_reg_multiple(dev, ADXL367_X_DATA_H, xyzt_values,
+						     sampleSize);
+		if (ret != 0) {
+			return ret;
+		}
 
-	/* The directly read data is 14 bits signed, left-adjusted. Combine the two bytes
-	 * to build a 14bit unsigned right-adjusted integer.
-	 */
+		/* The directly read data is 14 bits signed, left-adjusted. Combine the two bytes
+		 * to build a 14bit unsigned right-adjusted integer.
+		 */
 
-	x = ((((uint16_t)xyzt_values[0]) << 6) | (xyzt_values[1] >> 2));
-	y = ((((uint16_t)xyzt_values[2]) << 6) | (xyzt_values[3] >> 2));
-	z = ((((uint16_t)xyzt_values[4]) << 6) | (xyzt_values[5] >> 2));
-	if (cfg->temp_en) {
-		t = ((((uint16_t)xyzt_values[6]) << 6) | (xyzt_values[7] >> 2));
+		x = ((((uint16_t)xyzt_values[0]) << 6) | (xyzt_values[1] >> 2));
+		y = ((((uint16_t)xyzt_values[2]) << 6) | (xyzt_values[3] >> 2));
+		z = ((((uint16_t)xyzt_values[4]) << 6) | (xyzt_values[5] >> 2));
+		if (cfg->temp_en) {
+			t = ((((uint16_t)xyzt_values[6]) << 6) | (xyzt_values[7] >> 2));
+		}
+	} else {
+		ret = data->hw_tf->read_fifo(dev, xyzt_values, sampleSize);
+		if (ret != 0) {
+			return ret;
+		}
+
+		/* The FIFO data is 14 bits signed, right-adjusted. The upper two bits contain the
+		 * channel index. Discard the channel index and combine the two bytes to build a
+		 * 14bit unsigned integer.
+		 */
+
+		x = ((((uint16_t)(xyzt_values[0] & 0x3F)) << 8) | xyzt_values[1]);
+		y = ((((uint16_t)(xyzt_values[2] & 0x3F)) << 8) | xyzt_values[3]);
+		z = ((((uint16_t)(xyzt_values[4] & 0x3F)) << 8) | xyzt_values[5]);
+		if (cfg->temp_en) {
+			t = ((((uint16_t)(xyzt_values[6] & 0x3F)) << 8) | xyzt_values[7]);
+		}
 	}
 
 	/* Sign-extend the 14bit values to 16bit signed int by using a bitfield:
@@ -1013,8 +1037,10 @@ static int adxl367_init(const struct device *dev)
 		IS_ENABLED(CONFIG_ADXL367_REFERENCED_INACTIVITY_DETECTION_MODE),                   \
 	.inactivity_th.enable = IS_ENABLED(CONFIG_ADXL367_INACTIVITY_DETECTION_MODE),              \
 	.inactivity_time = CONFIG_ADXL367_INACTIVITY_TIME,                                         \
-	.fifo_config.fifo_mode = ADXL367_FIFO_DISABLED,                                            \
-	.fifo_config.fifo_format = ADXL367_FIFO_FORMAT_XYZ, .fifo_config.fifo_samples = 128,       \
+	.fifo_config.fifo_mode = (enum adxl367_fifo_mode)DT_INST_PROP(inst, fifo_mode),            \
+	.fifo_config.fifo_format =                                                                 \
+		DT_INST_PROP(inst, temp_en) ? ADXL367_FIFO_FORMAT_XYZT : ADXL367_FIFO_FORMAT_XYZ,  \
+	.fifo_config.fifo_samples = DT_INST_PROP(inst, fifo_samples),                              \
 	.fifo_config.fifo_read_mode = ADXL367_14B_CHID, .op_mode = ADXL367_MEASURE,
 
 /*
